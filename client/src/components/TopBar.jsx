@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
-import BrandMark from './BrandMark';
+import sretLogo from '../assets/sret.png';
 import {
   HiOutlineBell, HiOutlineLogout, HiOutlineCog, HiOutlineUser,
   HiOutlineMenu
@@ -34,7 +34,7 @@ const TopBar = ({ onMenuClick }) => {
       {/* Gold hairline on top */}
       <div className="h-[3px] bg-gradient-to-r from-gold-700 via-gold-400 to-gold-700" />
 
-      <div className="bg-gradient-to-br from-cardinal-800 via-cardinal-700 to-cardinal-800 pattern-hatch text-white shadow-sm">
+      <div className="bg-cardinal-100 text-cardinal-900 shadow-sm">
         <div className="flex items-center justify-between px-4 sm:px-6 h-16">
           {/* Left: mobile menu + brand */}
           <div className="flex items-center gap-3">
@@ -46,7 +46,7 @@ const TopBar = ({ onMenuClick }) => {
               <HiOutlineMenu className="w-6 h-6" />
             </button>
             <Link to="/dashboard" className="flex items-center hover:opacity-95 transition-opacity">
-              <BrandMark size="md" theme="dark" />
+              <img src={sretLogo} alt="SRET" className="h-12" />
             </Link>
           </div>
 
