@@ -1,106 +1,89 @@
-const User = require('../models/User');
-const Course = require('../models/Course');
-const Attendance = require('../models/Attendance');
-const Assignment = require('../models/Assignment');
-const Submission = require('../models/Submission');
-const Batch = require('../models/Batch');
+const { User, Course, Attendance, Assignment, Submission, Batch, CourseBatchTeacher } = require('../models');
+const { Op, fn, col, literal } = require('sequelize');
 
 // @desc    Get analytics (role-based)
 // @route   GET /api/analytics
 exports.getAnalytics = async (req, res) => {
   try {
-    const { role, _id, batch_id } = req.user;
+    const { role, batch_id } = req.user;
+    const userId = req.user.id;
 
     if (role === 'admin') {
       // ─── Admin analytics ───
-      const [
-        userCounts,
-        courseCount,
-        batchCount,
-        attendanceByCourse,
-        monthlyAttendance,
-        batchWiseStudents
-      ] = await Promise.all([
-        User.aggregate([{ $group: { _id: '$role', count: { $sum: 1 } } }]),
-        Course.countDocuments(),
-        Batch.countDocuments(),
-        // Attendance % per course
-        Attendance.aggregate([
-          {
-            $group: {
-              _id: '$course_id',
-              total: { $sum: 1 },
-              present: { $sum: { $cond: [{ $eq: ['$status', 'present'] }, 1, 0] } }
-            }
-          },
-          {
-            $lookup: { from: 'courses', localField: '_id', foreignField: '_id', as: 'course' }
-          },
-          { $unwind: { path: '$course', preserveNullAndEmptyArrays: true } },
-          {
-            $project: {
-              name: { $ifNull: ['$course.name', 'Unknown'] },
-              total: 1,
-              present: 1,
-              percentage: {
-                $cond: [{ $gt: ['$total', 0] }, { $round: [{ $multiply: [{ $divide: ['$present', '$total'] }, 100] }, 1] }, 0]
-              }
-            }
-          },
-          { $sort: { name: 1 } }
-        ]),
-        // Monthly attendance trend (last 6 months)
-        Attendance.aggregate([
-          { $match: { date: { $gte: new Date(new Date().setMonth(new Date().getMonth() - 6)) } } },
-          {
-            $group: {
-              _id: { year: { $year: '$date' }, month: { $month: '$date' } },
-              total: { $sum: 1 },
-              present: { $sum: { $cond: [{ $eq: ['$status', 'present'] }, 1, 0] } }
-            }
-          },
-          {
-            $project: {
-              _id: 0,
-              month: {
-                $concat: [
-                  { $arrayElemAt: [['', 'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'], '$_id.month'] },
-                  ' ', { $toString: '$_id.year' }
-                ]
-              },
-              total: 1,
-              present: 1,
-              percentage: {
-                $cond: [{ $gt: ['$total', 0] }, { $round: [{ $multiply: [{ $divide: ['$present', '$total'] }, 100] }, 1] }, 0]
-              },
-              sortKey: { $add: [{ $multiply: ['$_id.year', 100] }, '$_id.month'] }
-            }
-          },
-          { $sort: { sortKey: 1 } },
-          { $project: { sortKey: 0 } }
-        ]),
-        // Students per batch
-        User.aggregate([
-          { $match: { role: 'student', batch_id: { $ne: null } } },
-          { $group: { _id: '$batch_id', count: { $sum: 1 } } },
-          { $lookup: { from: 'batches', localField: '_id', foreignField: '_id', as: 'batch' } },
-          { $unwind: { path: '$batch', preserveNullAndEmptyArrays: true } },
-          { $project: { name: { $ifNull: ['$batch.name', 'Unassigned'] }, count: 1 } },
-          { $sort: { name: 1 } }
-        ])
+      const [students, teachers, admins, courseCount, batchCount] = await Promise.all([
+        User.count({ where: { role: 'student' } }),
+        User.count({ where: { role: 'teacher' } }),
+        User.count({ where: { role: 'admin' } }),
+        Course.count(),
+        Batch.count()
       ]);
 
-      const overview = {};
-      userCounts.forEach(u => { overview[u._id + 's'] = u.count; });
-      overview.courses = courseCount;
-      overview.batches = batchCount;
+      // Attendance % per course
+      const attendanceByCourse = await Attendance.findAll({
+        attributes: [
+          'course_id',
+          [fn('COUNT', col('Attendance.id')), 'total'],
+          [fn('SUM', literal("CASE WHEN \"Attendance\".\"status\" = 'present' THEN 1 ELSE 0 END")), 'present']
+        ],
+        include: [{ model: Course, as: 'course', attributes: ['name'] }],
+        group: ['course_id', 'course.id'],
+        raw: true, nest: true
+      });
+
+      const fmtAttByCourse = attendanceByCourse.map(d => ({
+        _id: d.course_id,
+        name: d.course ? d.course.name : 'Unknown',
+        total: parseInt(d.total),
+        present: parseInt(d.present),
+        percentage: parseInt(d.total) > 0 ? Math.round((parseInt(d.present) / parseInt(d.total)) * 1000) / 10 : 0
+      }));
+
+      // Monthly attendance trend (last 6 months)
+      const sixMonthsAgo = new Date();
+      sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 6);
+      const monthNames = ['', 'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+      const monthlyRaw = await Attendance.findAll({
+        where: { date: { [Op.gte]: sixMonthsAgo } },
+        attributes: [
+          [fn('EXTRACT', literal("YEAR FROM date")), 'yr'],
+          [fn('EXTRACT', literal("MONTH FROM date")), 'mo'],
+          [fn('COUNT', col('id')), 'total'],
+          [fn('SUM', literal("CASE WHEN status = 'present' THEN 1 ELSE 0 END")), 'present']
+        ],
+        group: [literal("EXTRACT(YEAR FROM date)"), literal("EXTRACT(MONTH FROM date)")],
+        order: [literal("EXTRACT(YEAR FROM date)"), literal("EXTRACT(MONTH FROM date)")],
+        raw: true
+      });
+
+      const monthlyAttendance = monthlyRaw.map(d => ({
+        month: `${monthNames[parseInt(d.mo)]} ${d.yr}`,
+        total: parseInt(d.total),
+        present: parseInt(d.present),
+        percentage: parseInt(d.total) > 0 ? Math.round((parseInt(d.present) / parseInt(d.total)) * 1000) / 10 : 0
+      }));
+
+      // Students per batch
+      const batchWiseRaw = await User.findAll({
+        where: { role: 'student', batch_id: { [Op.ne]: null } },
+        attributes: ['batch_id', [fn('COUNT', col('User.id')), 'count']],
+        include: [{ model: Batch, as: 'batch', attributes: ['name'] }],
+        group: ['batch_id', 'batch.id'],
+        raw: true, nest: true
+      });
+
+      const batchWiseStudents = batchWiseRaw.map(d => ({
+        _id: d.batch_id,
+        name: d.batch ? d.batch.name : 'Unassigned',
+        count: parseInt(d.count)
+      }));
 
       return res.json({
         success: true,
         data: {
           role: 'admin',
-          overview,
-          attendanceByCourse,
+          overview: { students, teachers, admins, courses: courseCount, batches: batchCount },
+          attendanceByCourse: fmtAttByCourse,
           monthlyAttendance,
           batchWiseStudents
         }
@@ -108,92 +91,81 @@ exports.getAnalytics = async (req, res) => {
 
     } else if (role === 'teacher') {
       // ─── Teacher analytics ───
-      const courses = await Course.find({ 'batches.teacher_id': _id });
-      const courseIds = courses.map(c => c._id);
+      const cbtRecords = await CourseBatchTeacher.findAll({ where: { teacher_id: userId } });
+      const courseIds = [...new Set(cbtRecords.map(r => r.course_id))];
+      const courses = await Course.findAll({ where: { id: { [Op.in]: courseIds } } });
 
-      const [attendanceByCourse, monthlyAttendance, assignmentStats] = await Promise.all([
-        // Attendance per course
-        Attendance.aggregate([
-          { $match: { course_id: { $in: courseIds } } },
-          {
-            $group: {
-              _id: '$course_id',
-              total: { $sum: 1 },
-              present: { $sum: { $cond: [{ $eq: ['$status', 'present'] }, 1, 0] } }
-            }
-          },
-          { $lookup: { from: 'courses', localField: '_id', foreignField: '_id', as: 'course' } },
-          { $unwind: { path: '$course', preserveNullAndEmptyArrays: true } },
-          {
-            $project: {
-              name: { $ifNull: ['$course.name', 'Unknown'] },
-              total: 1, present: 1,
-              percentage: {
-                $cond: [{ $gt: ['$total', 0] }, { $round: [{ $multiply: [{ $divide: ['$present', '$total'] }, 100] }, 1] }, 0]
-              }
-            }
-          }
-        ]),
-        // Monthly attendance for teacher's courses
-        Attendance.aggregate([
-          { $match: { course_id: { $in: courseIds }, date: { $gte: new Date(new Date().setMonth(new Date().getMonth() - 6)) } } },
-          {
-            $group: {
-              _id: { year: { $year: '$date' }, month: { $month: '$date' } },
-              total: { $sum: 1 },
-              present: { $sum: { $cond: [{ $eq: ['$status', 'present'] }, 1, 0] } }
-            }
-          },
-          {
-            $project: {
-              _id: 0,
-              month: {
-                $concat: [
-                  { $arrayElemAt: [['', 'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'], '$_id.month'] },
-                  ' ', { $toString: '$_id.year' }
-                ]
-              },
-              total: 1, present: 1,
-              percentage: {
-                $cond: [{ $gt: ['$total', 0] }, { $round: [{ $multiply: [{ $divide: ['$present', '$total'] }, 100] }, 1] }, 0]
-              },
-              sortKey: { $add: [{ $multiply: ['$_id.year', 100] }, '$_id.month'] }
-            }
-          },
-          { $sort: { sortKey: 1 } },
-          { $project: { sortKey: 0 } }
-        ]),
-        // Assignment submission stats per course
-        Assignment.aggregate([
-          { $match: { course_id: { $in: courseIds } } },
-          {
-            $lookup: {
-              from: 'submissions', localField: '_id', foreignField: 'assignment_id', as: 'submissions'
-            }
-          },
-          {
-            $lookup: { from: 'courses', localField: 'course_id', foreignField: '_id', as: 'course' }
-          },
-          { $unwind: { path: '$course', preserveNullAndEmptyArrays: true } },
-          {
-            $project: {
-              name: '$title',
-              courseName: { $ifNull: ['$course.name', 'Unknown'] },
-              totalSubmissions: { $size: '$submissions' },
-              due_date: 1
-            }
-          },
-          { $sort: { due_date: -1 } },
-          { $limit: 10 }
-        ])
-      ]);
+      // Attendance per course
+      const attendanceByCourse = await Attendance.findAll({
+        where: { course_id: { [Op.in]: courseIds } },
+        attributes: [
+          'course_id',
+          [fn('COUNT', col('Attendance.id')), 'total'],
+          [fn('SUM', literal("CASE WHEN \"Attendance\".\"status\" = 'present' THEN 1 ELSE 0 END")), 'present']
+        ],
+        include: [{ model: Course, as: 'course', attributes: ['name'] }],
+        group: ['course_id', 'course.id'],
+        raw: true, nest: true
+      });
+
+      const fmtAttByCourse = attendanceByCourse.map(d => ({
+        _id: d.course_id,
+        name: d.course ? d.course.name : 'Unknown',
+        total: parseInt(d.total),
+        present: parseInt(d.present),
+        percentage: parseInt(d.total) > 0 ? Math.round((parseInt(d.present) / parseInt(d.total)) * 1000) / 10 : 0
+      }));
+
+      // Monthly attendance
+      const sixMonthsAgo = new Date();
+      sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 6);
+      const monthNames = ['', 'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+      const monthlyRaw = await Attendance.findAll({
+        where: { course_id: { [Op.in]: courseIds }, date: { [Op.gte]: sixMonthsAgo } },
+        attributes: [
+          [fn('EXTRACT', literal("YEAR FROM date")), 'yr'],
+          [fn('EXTRACT', literal("MONTH FROM date")), 'mo'],
+          [fn('COUNT', col('id')), 'total'],
+          [fn('SUM', literal("CASE WHEN status = 'present' THEN 1 ELSE 0 END")), 'present']
+        ],
+        group: [literal("EXTRACT(YEAR FROM date)"), literal("EXTRACT(MONTH FROM date)")],
+        order: [literal("EXTRACT(YEAR FROM date)"), literal("EXTRACT(MONTH FROM date)")],
+        raw: true
+      });
+
+      const monthlyAttendance = monthlyRaw.map(d => ({
+        month: `${monthNames[parseInt(d.mo)]} ${d.yr}`,
+        total: parseInt(d.total),
+        present: parseInt(d.present),
+        percentage: parseInt(d.total) > 0 ? Math.round((parseInt(d.present) / parseInt(d.total)) * 1000) / 10 : 0
+      }));
+
+      // Assignment submission stats
+      const assignments = await Assignment.findAll({
+        where: { course_id: { [Op.in]: courseIds } },
+        include: [
+          { model: Course, as: 'course', attributes: ['name'] },
+          { model: Submission, as: 'submissions' }
+        ],
+        order: [['due_date', 'DESC']],
+        limit: 10
+      });
+
+      const assignmentStats = assignments.map(a => ({
+        _id: a.id,
+        name: a.title,
+        courseName: a.course ? a.course.name : 'Unknown',
+        totalSubmissions: a.submissions ? a.submissions.length : 0,
+        due_date: a.due_date
+      }));
 
       return res.json({
         success: true,
         data: {
           role: 'teacher',
           courseCount: courses.length,
-          attendanceByCourse,
+          attendanceByCourse: fmtAttByCourse,
           monthlyAttendance,
           assignmentStats
         }
@@ -201,93 +173,79 @@ exports.getAnalytics = async (req, res) => {
 
     } else {
       // ─── Student analytics ───
-      const courses = await Course.find({ 'batches.batch_id': batch_id }).select('_id name');
-      const courseIds = courses.map(c => c._id);
+      const cbtRecords = await CourseBatchTeacher.findAll({ where: { batch_id }, attributes: ['course_id'] });
+      const courseIds = cbtRecords.map(r => r.course_id);
+      const courses = await Course.findAll({ where: { id: { [Op.in]: courseIds } }, attributes: ['id', 'name'] });
 
-      const [attendanceByCourse, monthlyAttendance, assignmentStats] = await Promise.all([
-        // My attendance per course
-        Attendance.aggregate([
-          { $match: { student_id: _id, course_id: { $in: courseIds } } },
-          {
-            $group: {
-              _id: '$course_id',
-              total: { $sum: 1 },
-              present: { $sum: { $cond: [{ $eq: ['$status', 'present'] }, 1, 0] } }
-            }
-          },
-          { $lookup: { from: 'courses', localField: '_id', foreignField: '_id', as: 'course' } },
-          { $unwind: { path: '$course', preserveNullAndEmptyArrays: true } },
-          {
-            $project: {
-              name: { $ifNull: ['$course.name', 'Unknown'] },
-              total: 1, present: 1,
-              absent: { $subtract: ['$total', '$present'] },
-              percentage: {
-                $cond: [{ $gt: ['$total', 0] }, { $round: [{ $multiply: [{ $divide: ['$present', '$total'] }, 100] }, 1] }, 0]
-              }
-            }
-          }
-        ]),
-        // My monthly attendance trend
-        Attendance.aggregate([
-          { $match: { student_id: _id, date: { $gte: new Date(new Date().setMonth(new Date().getMonth() - 6)) } } },
-          {
-            $group: {
-              _id: { year: { $year: '$date' }, month: { $month: '$date' } },
-              total: { $sum: 1 },
-              present: { $sum: { $cond: [{ $eq: ['$status', 'present'] }, 1, 0] } }
-            }
-          },
-          {
-            $project: {
-              _id: 0,
-              month: {
-                $concat: [
-                  { $arrayElemAt: [['', 'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'], '$_id.month'] },
-                  ' ', { $toString: '$_id.year' }
-                ]
-              },
-              total: 1, present: 1,
-              percentage: {
-                $cond: [{ $gt: ['$total', 0] }, { $round: [{ $multiply: [{ $divide: ['$present', '$total'] }, 100] }, 1] }, 0]
-              },
-              sortKey: { $add: [{ $multiply: ['$_id.year', 100] }, '$_id.month'] }
-            }
-          },
-          { $sort: { sortKey: 1 } },
-          { $project: { sortKey: 0 } }
-        ]),
-        // My submission status
-        Assignment.aggregate([
-          { $match: { course_id: { $in: courseIds } } },
-          {
-            $lookup: {
-              from: 'submissions',
-              let: { assignId: '$_id' },
-              pipeline: [
-                { $match: { $expr: { $and: [{ $eq: ['$assignment_id', '$$assignId'] }, { $eq: ['$student_id', _id] }] } } }
-              ],
-              as: 'mySubmission'
-            }
-          },
-          { $lookup: { from: 'courses', localField: 'course_id', foreignField: '_id', as: 'course' } },
-          { $unwind: { path: '$course', preserveNullAndEmptyArrays: true } },
-          {
-            $project: {
-              title: 1,
-              courseName: { $ifNull: ['$course.name', 'Unknown'] },
-              due_date: 1,
-              submitted: { $gt: [{ $size: '$mySubmission' }, 0] }
-            }
-          },
-          { $sort: { due_date: -1 } },
-          { $limit: 10 }
-        ])
-      ]);
+      // My attendance per course
+      const attendanceByCourse = await Attendance.findAll({
+        where: { student_id: userId, course_id: { [Op.in]: courseIds } },
+        attributes: [
+          'course_id',
+          [fn('COUNT', col('Attendance.id')), 'total'],
+          [fn('SUM', literal("CASE WHEN \"Attendance\".\"status\" = 'present' THEN 1 ELSE 0 END")), 'present']
+        ],
+        include: [{ model: Course, as: 'course', attributes: ['name'] }],
+        group: ['course_id', 'course.id'],
+        raw: true, nest: true
+      });
+
+      const fmtAttByCourse = attendanceByCourse.map(d => ({
+        _id: d.course_id,
+        name: d.course ? d.course.name : 'Unknown',
+        total: parseInt(d.total),
+        present: parseInt(d.present),
+        absent: parseInt(d.total) - parseInt(d.present),
+        percentage: parseInt(d.total) > 0 ? Math.round((parseInt(d.present) / parseInt(d.total)) * 1000) / 10 : 0
+      }));
+
+      // Monthly attendance
+      const sixMonthsAgo = new Date();
+      sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 6);
+      const monthNames = ['', 'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+      const monthlyRaw = await Attendance.findAll({
+        where: { student_id: userId, date: { [Op.gte]: sixMonthsAgo } },
+        attributes: [
+          [fn('EXTRACT', literal("YEAR FROM date")), 'yr'],
+          [fn('EXTRACT', literal("MONTH FROM date")), 'mo'],
+          [fn('COUNT', col('id')), 'total'],
+          [fn('SUM', literal("CASE WHEN status = 'present' THEN 1 ELSE 0 END")), 'present']
+        ],
+        group: [literal("EXTRACT(YEAR FROM date)"), literal("EXTRACT(MONTH FROM date)")],
+        order: [literal("EXTRACT(YEAR FROM date)"), literal("EXTRACT(MONTH FROM date)")],
+        raw: true
+      });
+
+      const monthlyAttendance = monthlyRaw.map(d => ({
+        month: `${monthNames[parseInt(d.mo)]} ${d.yr}`,
+        total: parseInt(d.total),
+        present: parseInt(d.present),
+        percentage: parseInt(d.total) > 0 ? Math.round((parseInt(d.present) / parseInt(d.total)) * 1000) / 10 : 0
+      }));
+
+      // My submission status
+      const assignments = await Assignment.findAll({
+        where: { course_id: { [Op.in]: courseIds } },
+        include: [
+          { model: Course, as: 'course', attributes: ['name'] },
+          { model: Submission, as: 'submissions', where: { student_id: userId }, required: false }
+        ],
+        order: [['due_date', 'DESC']],
+        limit: 10
+      });
+
+      const assignmentStats = assignments.map(a => ({
+        _id: a.id,
+        title: a.title,
+        courseName: a.course ? a.course.name : 'Unknown',
+        due_date: a.due_date,
+        submitted: a.submissions && a.submissions.length > 0
+      }));
 
       // Overall attendance
-      const totalRecords = attendanceByCourse.reduce((sum, c) => sum + c.total, 0);
-      const totalPresent = attendanceByCourse.reduce((sum, c) => sum + c.present, 0);
+      const totalRecords = fmtAttByCourse.reduce((sum, c) => sum + c.total, 0);
+      const totalPresent = fmtAttByCourse.reduce((sum, c) => sum + c.present, 0);
       const overallPercentage = totalRecords > 0 ? Math.round((totalPresent / totalRecords) * 100) : 0;
 
       return res.json({
@@ -296,7 +254,7 @@ exports.getAnalytics = async (req, res) => {
           role: 'student',
           overallAttendance: overallPercentage,
           courseCount: courses.length,
-          attendanceByCourse,
+          attendanceByCourse: fmtAttByCourse,
           monthlyAttendance,
           assignmentStats
         }

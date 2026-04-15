@@ -7,8 +7,10 @@ const rateLimit = require('express-rate-limit');
 const compression = require('compression');
 const path = require('path');
 
-const connectDB = require('./config/db');
+const { connectDB, sequelize } = require('./config/db');
 const { port: PORT } = require('./config/config');
+// Pre-load models and associations
+require('./models');
 const errorHandler = require('./middleware/errorHandler');
 
 // Route imports
@@ -31,8 +33,7 @@ const adminRoutes = require('./routes/admin.routes');
 
 const app = express();
 
-// Connect to MongoDB
-connectDB();
+// Database connection is handled in the startup function below
 
 // Security
 app.use(helmet());
@@ -105,9 +106,21 @@ app.get('/api/health', (req, res) => {
 // Error handler
 app.use(errorHandler);
 
-// Start server
-app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
-});
+// Start server with async database setup
+const startServer = async () => {
+  try {
+    await connectDB();
+    await sequelize.sync({ alter: false });
+    console.log('Database synced successfully');
+    app.listen(PORT, () => {
+      console.log(`Server running on port ${PORT}`);
+    });
+  } catch (error) {
+    console.error('Failed to start server:', error.message);
+    process.exit(1);
+  }
+};
+
+startServer();
 
 module.exports = app;

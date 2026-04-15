@@ -1,25 +1,25 @@
-const Attendance = require('../models/Attendance');
-const Course = require('../models/Course');
-const User = require('../models/User');
-const ODApplication = require('../models/ODApplication');
-const Timetable = require('../models/Timetable');
+const { Attendance, Course, User, ODApplication, Timetable, TimetableSlot, CourseBatchTeacher, Batch } = require('../models');
+const { Op } = require('sequelize');
 
 // @desc    Get attendance (role-filtered)
 // @route   GET /api/attendance
 exports.getAttendance = async (req, res) => {
   try {
-    const { role, _id, batch_id } = req.user;
+    const { role, batch_id } = req.user;
+    const userId = req.user.id;
 
     if (role === 'student') {
-      // Get attendance grouped by course with percentage
-      const courses = await Course.find({ batch_id });
+      const cbtRecords = await CourseBatchTeacher.findAll({ where: { batch_id }, attributes: ['course_id'] });
+      const courseIds = cbtRecords.map(r => r.course_id);
+      const courses = await Course.findAll({ where: { id: { [Op.in]: courseIds } } });
+
       const courseData = await Promise.all(courses.map(async (course) => {
-        const records = await Attendance.find({ student_id: _id, course_id: course._id });
+        const records = await Attendance.findAll({ where: { student_id: userId, course_id: course.id } });
         const total = records.length;
         const present = records.filter(r => r.status === 'present').length;
         const percentage = total > 0 ? Math.round((present / total) * 100) : 0;
         return {
-          course: { _id: course._id, name: course.name, code: course.code },
+          course: { _id: course.id, name: course.name, code: course.code },
           total,
           present,
           absent: total - present,
@@ -30,17 +30,34 @@ exports.getAttendance = async (req, res) => {
     }
 
     if (role === 'teacher') {
-      // Return courses the teacher teaches
-      const courses = await Course.find({ teacher_id: _id })
-        .populate('batch_id', 'name');
+      const cbtRecords = await CourseBatchTeacher.findAll({
+        where: { teacher_id: userId },
+        include: [
+          { model: Course, as: 'course' },
+          { model: Batch, as: 'batch', attributes: ['name'] }
+        ]
+      });
+      const courses = cbtRecords.map(r => {
+        const c = r.course.toJSON();
+        c._id = c.id;
+        c.batch_id = r.batch ? { _id: r.batch_id, name: r.batch.name } : r.batch_id;
+        return c;
+      });
       return res.json({ success: true, data: courses });
     }
 
     // Admin: return all courses
-    const courses = await Course.find()
-      .populate('teacher_id', 'name')
-      .populate('batch_id', 'name');
-    return res.json({ success: true, data: courses });
+    const courses = await Course.findAll({
+      include: [{
+        model: CourseBatchTeacher, as: 'courseBatches',
+        include: [
+          { model: User, as: 'teacher', attributes: ['name'] },
+          { model: Batch, as: 'batch', attributes: ['name'] }
+        ]
+      }]
+    });
+    const formatted = courses.map(c => { const d = c.toJSON(); d._id = d.id; return d; });
+    return res.json({ success: true, data: formatted });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }
@@ -53,165 +70,169 @@ exports.getAttendanceByCourse = async (req, res) => {
     const { course_id } = req.params;
     const { date } = req.query;
 
-    let query = { course_id };
+    let whereClause = { course_id };
     if (date) {
-      const startOfDay = new Date(date);
-      startOfDay.setHours(0, 0, 0, 0);
-      const endOfDay = new Date(date);
-      endOfDay.setHours(23, 59, 59, 999);
-      query.date = { $gte: startOfDay, $lte: endOfDay };
+      whereClause.date = date; // DATEONLY comparison
     }
 
-    const records = await Attendance.find(query)
-      .populate('student_id', 'name email')
-      .populate('course_id', 'name code')
-      .sort({ date: -1 });
+    const records = await Attendance.findAll({
+      where: whereClause,
+      include: [
+        { model: User, as: 'student', attributes: ['name', 'email'] },
+        { model: Course, as: 'course', attributes: ['name', 'code'] }
+      ],
+      order: [['date', 'DESC']]
+    });
 
-    res.json({ success: true, data: records });
+    const formatted = records.map(r => {
+      const d = r.toJSON();
+      d._id = d.id;
+      if (d.student) { d.student_id = { _id: d.student_id, name: d.student.name, email: d.student.email }; delete d.student; }
+      if (d.course) { d.course_id = { _id: d.course_id, name: d.course.name, code: d.course.code }; delete d.course; }
+      return d;
+    });
+
+    res.json({ success: true, data: formatted });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }
 };
 
-// @desc    Mark attendance (bulk, with hourly_status merging)
-// @route   POST /api/attendance/mark/:course_id
+// @desc    Mark attendance (bulk)
+// @route   POST /api/attendance
+// Body: { course_id, date, records: [{ student_id, hourly_status: ['present','absent',...] }] }
 exports.markAttendance = async (req, res) => {
   try {
-    const { course_id } = req.params;
-    const { date, selected_hours, attendance } = req.body;
+    const { course_id, date, records } = req.body;
 
-    if (!date || !selected_hours || !attendance) {
-      return res.status(400).json({ success: false, error: 'Date, selected hours, and attendance data are required' });
+    if (!course_id || !date || !Array.isArray(records)) {
+      return res.status(400).json({ success: false, error: 'course_id, date, and records array are required' });
     }
 
-    const course = await Course.findById(course_id);
+    const course = await Course.findByPk(course_id);
     if (!course) {
       return res.status(404).json({ success: false, error: 'Course not found' });
     }
 
-    const attendanceDate = new Date(date);
-    attendanceDate.setHours(0, 0, 0, 0);
-
     // Check for approved OD applications for this date
-    const odApplications = await ODApplication.find({
-      status: 'approved',
-      start_date: { $lte: attendanceDate },
-      end_date: { $gte: attendanceDate }
+    const odApplications = await ODApplication.findAll({
+      where: {
+        status: 'approved',
+        start_date: { [Op.lte]: date },
+        end_date: { [Op.gte]: date }
+      },
+      attributes: ['student_id']
     });
-    const odStudentIds = new Set(odApplications.map(od => od.student_id.toString()));
+    const odStudentIds = new Set(odApplications.map(od => String(od.student_id)));
 
-    const bulkOps = [];
-    const studentIds = Object.keys(attendance);
+    let marked = 0;
+    for (const rec of records) {
+      const studentId = parseInt(rec.student_id, 10);
+      if (!studentId || !Array.isArray(rec.hourly_status)) continue;
 
-    for (const studentId of studentIds) {
-      const studentAttendance = attendance[studentId];
+      // OD override: approved OD = present for all hours
+      const finalHourly = odStudentIds.has(String(studentId))
+        ? rec.hourly_status.map(() => 'present')
+        : rec.hourly_status.map(h => (h === 'present' ? 'present' : 'absent'));
 
-      // Check if record already exists
-      const existing = await Attendance.findOne({
-        student_id: studentId,
-        course_id,
-        date: attendanceDate
+      const status = finalHourly.some(h => h === 'present') ? 'present' : 'absent';
+
+      const [existing, created] = await Attendance.findOrCreate({
+        where: { student_id: studentId, course_id, date },
+        defaults: {
+          student_id: studentId,
+          course_id,
+          date,
+          status,
+          hourly_status: finalHourly,
+          marked_by: req.user.id,
+          marked_at: new Date()
+        }
       });
 
-      if (existing) {
-        // MERGE: only update selected hours
-        const merged = [...existing.hourly_status];
-        for (const hour of selected_hours) {
-          const hourIndex = hour - 1;
-          if (odStudentIds.has(studentId)) {
-            merged[hourIndex] = 'P'; // OD students auto-marked present
-          } else {
-            merged[hourIndex] = studentAttendance[String(hour)] || 'A';
-          }
-        }
-        const status = merged.some(h => h === 'P') ? 'present' : 'absent';
-
-        bulkOps.push({
-          updateOne: {
-            filter: { _id: existing._id },
-            update: {
-              $set: {
-                hourly_status: merged,
-                status,
-                marked_by: req.user._id,
-                updated_at: new Date()
-              }
-            }
-          }
-        });
-      } else {
-        // CREATE new record
-        const hourly_status = ['N', 'N', 'N', 'N', 'N', 'N', 'N'];
-        for (const hour of selected_hours) {
-          const hourIndex = hour - 1;
-          if (odStudentIds.has(studentId)) {
-            hourly_status[hourIndex] = 'P';
-          } else {
-            hourly_status[hourIndex] = studentAttendance[String(hour)] || 'A';
-          }
-        }
-        const status = hourly_status.some(h => h === 'P') ? 'present' : 'absent';
-
-        bulkOps.push({
-          insertOne: {
-            document: {
-              student_id: studentId,
-              course_id,
-              date: attendanceDate,
-              status,
-              hourly_status,
-              marked_by: req.user._id,
-              marked_at: new Date(),
-              updated_at: new Date()
-            }
-          }
+      if (!created) {
+        await existing.update({
+          status,
+          hourly_status: finalHourly,
+          marked_by: req.user.id
         });
       }
+      marked++;
     }
 
-    if (bulkOps.length > 0) {
-      await Attendance.bulkWrite(bulkOps);
-    }
-
-    res.json({ success: true, message: `Attendance marked for ${studentIds.length} students` });
+    res.json({ success: true, message: `Attendance marked for ${marked} students` });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }
 };
 
 // @desc    Get attendance report for course + date
-// @route   GET /api/attendance/report/:course_id/:date
+// @route   GET /api/attendance/report?course_id=X&date=Y
 exports.getAttendanceReport = async (req, res) => {
   try {
-    const { course_id, date } = req.params;
+    const { course_id, date } = req.query;
 
-    const startOfDay = new Date(date);
-    startOfDay.setHours(0, 0, 0, 0);
-    const endOfDay = new Date(date);
-    endOfDay.setHours(23, 59, 59, 999);
+    if (!course_id || !date) {
+      return res.status(400).json({ success: false, error: 'course_id and date query params are required' });
+    }
 
-    const records = await Attendance.find({
-      course_id,
-      date: { $gte: startOfDay, $lte: endOfDay }
-    })
-      .populate('student_id', 'name email')
-      .populate('marked_by', 'name')
-      .sort({ 'student_id.name': 1 });
+    const records = await Attendance.findAll({
+      where: { course_id, date },
+      include: [
+        { model: User, as: 'student', attributes: ['name', 'email'] },
+        { model: User, as: 'marker', attributes: ['name'] }
+      ],
+      order: [['student_id', 'ASC']]
+    });
 
-    const course = await Course.findById(course_id).populate('batch_id', 'name');
+    const course = await Course.findByPk(course_id, {
+      include: [{
+        model: CourseBatchTeacher, as: 'courseBatches',
+        include: [{ model: Batch, as: 'batch', attributes: ['name'] }]
+      }]
+    });
 
     // Get timetable for context
     let timetable = null;
-    if (course && course.batch_id) {
-      timetable = await Timetable.findOne({ batch_id: course.batch_id._id || course.batch_id });
+    if (course && course.courseBatches && course.courseBatches.length > 0) {
+      const batchId = course.courseBatches[0].batch_id;
+      const tt = await Timetable.findOne({
+        where: { batch_id: batchId },
+        include: [{ model: TimetableSlot, as: 'slots' }]
+      });
+      if (tt) {
+        // Transform to day-based structure
+        const timetableData = tt.toJSON();
+        timetableData._id = timetableData.id;
+        const days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'];
+        timetableData.timetable = {};
+        days.forEach(day => {
+          timetableData.timetable[day] = timetableData.slots
+            .filter(s => s.day === day)
+            .sort((a, b) => a.hour - b.hour)
+            .map(s => ({ hour: s.hour, subject: s.subject, faculty: s.faculty, room: s.room }));
+        });
+        delete timetableData.slots;
+        timetable = timetableData;
+      }
     }
+
+    const formattedRecords = records.map(r => {
+      const d = r.toJSON();
+      d._id = d.id;
+      if (d.student) { d.student_id = { _id: d.student_id, name: d.student.name, email: d.student.email }; delete d.student; }
+      if (d.marker) { d.marked_by = { _id: d.marked_by, name: d.marker.name }; delete d.marker; }
+      return d;
+    });
+
+    const courseData = course ? { ...course.toJSON(), _id: course.id } : null;
 
     res.json({
       success: true,
       data: {
-        records,
-        course,
-        date: startOfDay,
+        records: formattedRecords,
+        course: courseData,
+        date,
         timetable
       }
     });
@@ -220,18 +241,76 @@ exports.getAttendanceReport = async (req, res) => {
   }
 };
 
-// @desc    Get student's attendance history
-// @route   GET /api/attendance/history/:student_id
+// @desc    Get attendance history
+// @route   GET /api/attendance/history?course_id=X&date=Y   (for teacher mark-attendance grid)
+// @route   GET /api/attendance/history?student_id=X          (for a student's history)
 exports.getAttendanceHistory = async (req, res) => {
   try {
-    const { student_id } = req.params;
+    const { course_id, date, student_id } = req.query;
 
-    const records = await Attendance.find({ student_id })
-      .populate('course_id', 'name code')
-      .populate('marked_by', 'name')
-      .sort({ date: -1 });
+    // Case 1: course + date → return batch students with existing attendance merged in
+    if (course_id && date) {
+      const cbt = await CourseBatchTeacher.findOne({
+        where: { course_id },
+        attributes: ['batch_id']
+      });
+      if (!cbt) {
+        return res.json({ success: true, data: [] });
+      }
 
-    res.json({ success: true, data: records });
+      const students = await User.findAll({
+        where: { batch_id: cbt.batch_id, role: 'student' },
+        attributes: ['id', 'name', 'email'],
+        order: [['name', 'ASC']]
+      });
+
+      const existing = await Attendance.findAll({
+        where: {
+          course_id,
+          date,
+          student_id: { [Op.in]: students.map(s => s.id) }
+        }
+      });
+      const attMap = new Map(existing.map(r => [r.student_id, r]));
+
+      const data = students.map(s => {
+        const rec = attMap.get(s.id);
+        return {
+          _id: s.id,
+          student_id: s.id,
+          name: s.name,
+          email: s.email,
+          hourly_status: rec ? rec.hourly_status : Array(7).fill('absent'),
+          status: rec ? rec.status : 'absent'
+        };
+      });
+
+      return res.json({ success: true, data });
+    }
+
+    // Case 2: student_id → return that student's full history
+    if (student_id) {
+      const records = await Attendance.findAll({
+        where: { student_id },
+        include: [
+          { model: Course, as: 'course', attributes: ['name', 'code'] },
+          { model: User, as: 'marker', attributes: ['name'] }
+        ],
+        order: [['date', 'DESC']]
+      });
+
+      const formatted = records.map(r => {
+        const d = r.toJSON();
+        d._id = d.id;
+        if (d.course) { d.course_id = { _id: d.course_id, name: d.course.name, code: d.course.code }; delete d.course; }
+        if (d.marker) { d.marked_by = { _id: d.marked_by, name: d.marker.name }; delete d.marker; }
+        return d;
+      });
+
+      return res.json({ success: true, data: formatted });
+    }
+
+    return res.status(400).json({ success: false, error: 'Provide either (course_id & date) or student_id' });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }
@@ -241,29 +320,37 @@ exports.getAttendanceHistory = async (req, res) => {
 // @route   PUT /api/attendance/:id
 exports.editAttendance = async (req, res) => {
   try {
-    const record = await Attendance.findById(req.params.id);
+    const record = await Attendance.findByPk(req.params.id);
     if (!record) {
       return res.status(404).json({ success: false, error: 'Attendance record not found' });
     }
 
     const { hourly_status, status } = req.body;
 
+    const updateData = {};
     if (hourly_status) {
-      record.hourly_status = hourly_status;
-      record.status = hourly_status.some(h => h === 'P') ? 'present' : 'absent';
+      updateData.hourly_status = hourly_status;
+      updateData.status = hourly_status.some(h => h === 'P') ? 'present' : 'absent';
     }
     if (status) {
-      record.status = status;
+      updateData.status = status;
     }
 
-    record.updated_at = new Date();
-    await record.save();
+    await record.update(updateData);
 
-    const populated = await Attendance.findById(record._id)
-      .populate('student_id', 'name email')
-      .populate('course_id', 'name code');
+    const populated = await Attendance.findByPk(record.id, {
+      include: [
+        { model: User, as: 'student', attributes: ['name', 'email'] },
+        { model: Course, as: 'course', attributes: ['name', 'code'] }
+      ]
+    });
 
-    res.json({ success: true, data: populated, message: 'Attendance updated successfully' });
+    const data = populated.toJSON();
+    data._id = data.id;
+    if (data.student) { data.student_id = { _id: data.student_id, name: data.student.name, email: data.student.email }; delete data.student; }
+    if (data.course) { data.course_id = { _id: data.course_id, name: data.course.name, code: data.course.code }; delete data.course; }
+
+    res.json({ success: true, data, message: 'Attendance updated successfully' });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }

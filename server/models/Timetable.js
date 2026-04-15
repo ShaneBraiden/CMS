@@ -1,23 +1,27 @@
-const mongoose = require('mongoose');
+module.exports = (sequelize, DataTypes) => {
+  const Timetable = sequelize.define('Timetable', {
+    id: {
+      type: DataTypes.INTEGER,
+      primaryKey: true,
+      autoIncrement: true
+    },
+    batch_id: {
+      type: DataTypes.INTEGER,
+      allowNull: false,
+      unique: true,
+      references: { model: 'Batches', key: 'id' },
+      onDelete: 'CASCADE'
+    }
+  }, {
+    timestamps: true,
+    createdAt: 'created_at',
+    updatedAt: 'updated_at'
+  });
 
-const hourSlotSchema = new mongoose.Schema({
-  hour:    { type: Number },
-  subject: { type: String, default: '' },
-  faculty: { type: String, default: '' },
-  room:    { type: String, default: '' }
-}, { _id: false });
+  Timetable.associate = (models) => {
+    Timetable.belongsTo(models.Batch, { foreignKey: 'batch_id', as: 'batch' });
+    Timetable.hasMany(models.TimetableSlot, { foreignKey: 'timetable_id', as: 'slots' });
+  };
 
-const timetableSchema = new mongoose.Schema({
-  batch_id: { type: mongoose.Schema.Types.ObjectId, ref: 'Batch', required: true, unique: true },
-  timetable: {
-    Monday:    [hourSlotSchema],
-    Tuesday:   [hourSlotSchema],
-    Wednesday: [hourSlotSchema],
-    Thursday:  [hourSlotSchema],
-    Friday:    [hourSlotSchema]
-  },
-  created_at: { type: Date, default: Date.now },
-  updated_at: { type: Date, default: Date.now }
-});
-
-module.exports = mongoose.model('Timetable', timetableSchema);
+  return Timetable;
+};

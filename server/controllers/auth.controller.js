@@ -1,4 +1,4 @@
-const User = require('../models/User');
+const { User, Batch } = require('../models');
 const generateToken = require('../utils/generateToken');
 
 // @desc    Login user
@@ -11,7 +11,7 @@ exports.login = async (req, res) => {
       return res.status(400).json({ success: false, error: 'Please provide email and password' });
     }
 
-    const user = await User.findOne({ email: email.toLowerCase() });
+    const user = await User.findOne({ where: { email: email.toLowerCase() } });
     if (!user) {
       return res.status(401).json({ success: false, error: 'Invalid email or password' });
     }
@@ -21,19 +21,19 @@ exports.login = async (req, res) => {
       return res.status(401).json({ success: false, error: 'Invalid email or password' });
     }
 
-    const token = generateToken(user._id);
+    const token = generateToken(user.id);
 
     res.cookie('token', token, {
       httpOnly: true,
       secure: process.env.NODE_ENV === 'production',
-      sameSite: 'strict',
+      sameSite: 'lax',
       maxAge: 7 * 24 * 60 * 60 * 1000
     });
 
     res.json({
       success: true,
       data: {
-        _id: user._id,
+        _id: user.id,
         name: user.name,
         email: user.email,
         role: user.role,
@@ -50,14 +50,14 @@ exports.login = async (req, res) => {
 // @route   POST /api/auth/register
 exports.register = async (req, res) => {
   try {
-    const { name, email, password, is_teacher } = req.body;
+    const { name, email, password, is_teacher, role: requestedRole } = req.body;
 
     if (!name || !email || !password) {
       return res.status(400).json({ success: false, error: 'Please provide name, email and password' });
     }
 
     // Email domain restriction
-    if (!email.endsWith('@sriher.edu.in')) {
+    if (!email.toLowerCase().endsWith('@sriher.edu.in')) {
       return res.status(400).json({ success: false, error: 'Only @sriher.edu.in emails are allowed' });
     }
 
@@ -67,33 +67,35 @@ exports.register = async (req, res) => {
     }
 
     // Check if user exists
-    const existing = await User.findOne({ email: email.toLowerCase() });
+    const existing = await User.findOne({ where: { email: email.toLowerCase() } });
     if (existing) {
       return res.status(400).json({ success: false, error: 'Email already registered' });
     }
 
-    const role = is_teacher ? 'pending_teacher' : 'student';
+    // Accept either `is_teacher: true` or `role: 'teacher'`. Teachers must be approved by admin.
+    const wantsTeacher = is_teacher === true || requestedRole === 'teacher';
+    const role = wantsTeacher ? 'pending_teacher' : 'student';
 
     const user = await User.create({
       name,
       email: email.toLowerCase(),
-      password_hash: password, // pre-save hook will hash
+      password_hash: password, // beforeCreate hook will hash
       role
     });
 
-    const token = generateToken(user._id);
+    const token = generateToken(user.id);
 
     res.cookie('token', token, {
       httpOnly: true,
       secure: process.env.NODE_ENV === 'production',
-      sameSite: 'strict',
+      sameSite: 'lax',
       maxAge: 7 * 24 * 60 * 60 * 1000
     });
 
     res.status(201).json({
       success: true,
       data: {
-        _id: user._id,
+        _id: user.id,
         name: user.name,
         email: user.email,
         role: user.role,
@@ -120,8 +122,18 @@ exports.logout = async (req, res) => {
 // @route   GET /api/auth/me
 exports.getMe = async (req, res) => {
   try {
-    const user = await User.findById(req.user._id).select('-password_hash').populate('batch_id', 'name');
-    res.json({ success: true, data: user });
+    const user = await User.findByPk(req.user.id, {
+      attributes: { exclude: ['password_hash'] },
+      include: [{ model: Batch, as: 'batch', attributes: ['name'] }]
+    });
+    // Format response to include _id for frontend compatibility
+    const userData = user.toJSON();
+    userData._id = userData.id;
+    if (userData.batch) {
+      userData.batch_id = { _id: userData.batch_id, name: userData.batch.name };
+    }
+    delete userData.batch;
+    res.json({ success: true, data: userData });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }

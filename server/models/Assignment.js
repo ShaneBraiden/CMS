@@ -1,13 +1,53 @@
-const mongoose = require('mongoose');
+module.exports = (sequelize, DataTypes) => {
+  const Assignment = sequelize.define('Assignment', {
+    id: {
+      type: DataTypes.INTEGER,
+      primaryKey: true,
+      autoIncrement: true
+    },
+    title: {
+      type: DataTypes.STRING,
+      allowNull: false
+    },
+    description: {
+      type: DataTypes.TEXT,
+      defaultValue: ''
+    },
+    course_id: {
+      type: DataTypes.INTEGER,
+      allowNull: false,
+      references: { model: 'Courses', key: 'id' },
+      onDelete: 'CASCADE'
+    },
+    teacher_id: {
+      type: DataTypes.INTEGER,
+      allowNull: true,
+      references: { model: 'Users', key: 'id' },
+      onDelete: 'SET NULL'
+    },
+    due_date: {
+      type: DataTypes.DATE,
+      allowNull: true
+    },
+    total_marks: {
+      type: DataTypes.INTEGER,
+      defaultValue: 100
+    }
+  }, {
+    timestamps: true,
+    createdAt: 'created_at',
+    updatedAt: 'updated_at',
+    indexes: [
+      { fields: ['course_id'] },
+      { fields: ['teacher_id'] }
+    ]
+  });
 
-const assignmentSchema = new mongoose.Schema({
-  title:       { type: String, required: true, trim: true },
-  description: { type: String, default: '' },
-  course_id:   { type: mongoose.Schema.Types.ObjectId, ref: 'Course', required: true },
-  teacher_id:  { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
-  due_date:    { type: Date },
-  total_marks: { type: Number, default: 100 },
-  created_at:  { type: Date, default: Date.now }
-});
+  Assignment.associate = (models) => {
+    Assignment.belongsTo(models.Course, { foreignKey: 'course_id', as: 'course' });
+    Assignment.belongsTo(models.User, { foreignKey: 'teacher_id', as: 'teacher' });
+    Assignment.hasMany(models.Submission, { foreignKey: 'assignment_id', as: 'submissions' });
+  };
 
-module.exports = mongoose.model('Assignment', assignmentSchema);
+  return Assignment;
+};

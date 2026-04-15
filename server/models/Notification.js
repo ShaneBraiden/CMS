@@ -1,14 +1,45 @@
-const mongoose = require('mongoose');
+module.exports = (sequelize, DataTypes) => {
+  const Notification = sequelize.define('Notification', {
+    id: {
+      type: DataTypes.INTEGER,
+      primaryKey: true,
+      autoIncrement: true
+    },
+    user_id: {
+      type: DataTypes.INTEGER,
+      allowNull: false,
+      references: { model: 'Users', key: 'id' },
+      onDelete: 'CASCADE'
+    },
+    message: {
+      type: DataTypes.TEXT,
+      allowNull: false
+    },
+    type: {
+      type: DataTypes.ENUM('assignment', 'announcement', 'grade', 'od', 'general'),
+      defaultValue: 'general'
+    },
+    reference_id: {
+      type: DataTypes.INTEGER,
+      allowNull: true
+    },
+    read: {
+      type: DataTypes.BOOLEAN,
+      defaultValue: false
+    }
+  }, {
+    timestamps: true,
+    createdAt: 'created_at',
+    updatedAt: false,
+    indexes: [
+      { fields: ['user_id', 'read'] },
+      { fields: ['user_id'] }
+    ]
+  });
 
-const notificationSchema = new mongoose.Schema({
-  user_id:      { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
-  message:      { type: String, required: true },
-  type:         { type: String, enum: ['assignment', 'announcement', 'grade', 'od', 'general'], default: 'general' },
-  reference_id: { type: mongoose.Schema.Types.ObjectId },
-  read:         { type: Boolean, default: false },
-  created_at:   { type: Date, default: Date.now }
-});
+  Notification.associate = (models) => {
+    Notification.belongsTo(models.User, { foreignKey: 'user_id', as: 'user' });
+  };
 
-notificationSchema.index({ user_id: 1, read: 1 });
-
-module.exports = mongoose.model('Notification', notificationSchema);
+  return Notification;
+};

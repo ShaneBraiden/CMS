@@ -13,10 +13,16 @@ export const AuthProvider = ({ children }) => {
   }, []);
 
   const checkAuth = async () => {
+    if (!localStorage.getItem('token')) {
+      setUser(null);
+      setLoading(false);
+      return;
+    }
     try {
       const { data } = await API.get('/auth/me');
       setUser(data.data);
     } catch {
+      localStorage.removeItem('token');
       setUser(null);
     } finally {
       setLoading(false);
@@ -25,18 +31,21 @@ export const AuthProvider = ({ children }) => {
 
   const login = async (email, password) => {
     const { data } = await API.post('/auth/login', { email, password });
+    if (data.token) localStorage.setItem('token', data.token);
     setUser(data.data);
     return data;
   };
 
   const register = async (formData) => {
     const { data } = await API.post('/auth/register', formData);
+    if (data.token) localStorage.setItem('token', data.token);
     setUser(data.data);
     return data;
   };
 
   const logout = async () => {
-    await API.post('/auth/logout');
+    try { await API.post('/auth/logout'); } catch { /* ignore */ }
+    localStorage.removeItem('token');
     setUser(null);
   };
 

@@ -1,0 +1,18 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(grep:*)",
+      "Bash(ls:*)",
+      "Bash(curl -sS -i -c /tmp/c.txt -X POST http://localhost:5173/api/auth/login -H \"Content-Type: application/json\" -d '{\"email\":\"admin@sriher.edu.in\",\"password\":\"Admin@123\"}')",
+      "Bash(curl -sS -b /tmp/c.txt http://localhost:5173/api/auth/me)",
+      "Bash(curl -sS -i -X POST http://localhost:5000/api/auth/login -H \"Content-Type: application/json\" -H \"Origin: http://localhost:5173\" -d '{\"email\":\"admin@sriher.edu.in\",\"password\":\"Admin@123\"}')",
+      "Bash(curl -sS -H \"Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6MSwiaWF0IjoxNzc2MTgxMjI1LCJleHAiOjE3NzY3ODYwMjV9.og7rhE5ETId4LJ-bE_uz3JfTQK29qnQzNju_EhqwN6Y\" http://localhost:5000/api/notifications/unread-count)",
+      "Bash(curl -sS -X POST http://localhost:5000/api/auth/login -H \"Content-Type: application/json\" -d '{\"email\":\"admin@sriher.edu.in\",\"password\":\"Admin@123\"}')",
+      "Bash(kill %1)",
+      "Bash(node -e ':*)",
+      "Bash(curl -sS -H 'Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6MSwiaWF0IjoxNzc2MTgyNzc3LCJleHAiOjE3NzY3ODc1Nzd9.s6ObAb4sJ_sUOh1lxmi_6b9i6nny-z8I-0ihz6oPD-g' http://localhost:5000/api/auth/me)",
+      "Bash(curl -sS -H 'Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6MSwiaWF0IjoxNzc2MTgyNzc3LCJleHAiOjE3NzY3ODc1Nzd9.s6ObAb4sJ_sUOh1lxmi_6b9i6nny-z8I-0ihz6oPD-g' http://localhost:5000/api/notifications/unread-count)",
+      "Bash(npm run:*)"
+    ]
+  }
+}

@@ -1,13 +1,45 @@
-const mongoose = require('mongoose');
+module.exports = (sequelize, DataTypes) => {
+  const Event = sequelize.define('Event', {
+    id: {
+      type: DataTypes.INTEGER,
+      primaryKey: true,
+      autoIncrement: true
+    },
+    title: {
+      type: DataTypes.STRING,
+      allowNull: false
+    },
+    description: {
+      type: DataTypes.TEXT,
+      defaultValue: ''
+    },
+    event_date: {
+      type: DataTypes.DATE,
+      allowNull: true
+    },
+    location: {
+      type: DataTypes.STRING,
+      defaultValue: ''
+    },
+    event_type: {
+      type: DataTypes.STRING,
+      defaultValue: ''
+    },
+    created_by: {
+      type: DataTypes.INTEGER,
+      allowNull: true,
+      references: { model: 'Users', key: 'id' },
+      onDelete: 'SET NULL'
+    }
+  }, {
+    timestamps: true,
+    createdAt: 'created_at',
+    updatedAt: 'updated_at'
+  });
 
-const eventSchema = new mongoose.Schema({
-  title:       { type: String, required: true, trim: true },
-  description: { type: String, default: '' },
-  event_date:  { type: Date },
-  location:    { type: String, default: '' },
-  event_type:  { type: String, default: '' },
-  created_by:  { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
-  created_at:  { type: Date, default: Date.now }
-});
+  Event.associate = (models) => {
+    Event.belongsTo(models.User, { foreignKey: 'created_by', as: 'creator' });
+  };
 
-module.exports = mongoose.model('Event', eventSchema);
+  return Event;
+};

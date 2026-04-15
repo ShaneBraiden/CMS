@@ -1,5 +1,5 @@
-import { useState, useEffect } from 'react';
-import { Link, useLocation, useNavigate } from 'react-router-dom';
+import { useEffect, useState } from 'react';
+import { Link, useLocation } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { NAV_ITEMS } from '../utils/constants';
 import API from '../api/axios';
@@ -7,9 +7,8 @@ import {
   HiOutlineHome, HiOutlineUsers, HiOutlineBookOpen, HiOutlineClipboard,
   HiOutlinePencil, HiOutlineClipboardCheck, HiOutlineCalendar,
   HiOutlineDocumentText, HiOutlineSpeakerphone, HiOutlineBadgeCheck,
-  HiOutlineCheckCircle, HiOutlineChartBar, HiOutlineCog,
-  HiOutlineBell, HiOutlineLogout, HiOutlineMenu, HiOutlineX,
-  HiOutlineCollection
+  HiOutlineCheckCircle, HiOutlineChartBar, HiOutlineCog, HiOutlineBell,
+  HiOutlineX, HiOutlineCollection
 } from 'react-icons/hi';
 
 const iconMap = {
@@ -19,146 +18,111 @@ const iconMap = {
   HiOutlineCheckCircle, HiOutlineChartBar, HiOutlineCog, HiOutlineCollection,
 };
 
-const Sidebar = ({ collapsed, setCollapsed }) => {
-  const { user, logout } = useAuth();
+const Sidebar = ({ mobileOpen, setMobileOpen }) => {
+  const { user } = useAuth();
   const location = useLocation();
-  const navigate = useNavigate();
-  const [mobileOpen, setMobileOpen] = useState(false);
-  const [unreadCount, setUnreadCount] = useState(0);
+  const [unread, setUnread] = useState(0);
 
   const navItems = NAV_ITEMS[user?.role] || [];
 
-  // Poll unread notification count
   useEffect(() => {
     const fetchCount = async () => {
       try {
         const { data } = await API.get('/notifications/unread-count');
-        setUnreadCount(data.data);
+        setUnread(data.data || 0);
       } catch { /* ignore */ }
     };
     fetchCount();
-    const interval = setInterval(fetchCount, 30000);
-    return () => clearInterval(interval);
+    const iv = setInterval(fetchCount, 30000);
+    return () => clearInterval(iv);
   }, []);
 
-  const handleLogout = async () => {
-    await logout();
-    navigate('/login');
-  };
-
-  const NavLink = ({ item, isCollapsed = false }) => {
+  const NavLink = ({ item }) => {
     const Icon = iconMap[item.icon] || HiOutlineHome;
     const isActive = location.pathname === item.path;
-
+    const isNotif = item.path === '/notifications';
     return (
       <Link
         to={item.path}
         onClick={() => setMobileOpen(false)}
-        title={isCollapsed ? item.label : ''}
-        className={`flex items-center gap-3 px-4 py-2.5 rounded-lg text-sm font-medium transition-colors ${
+        className={`group relative flex items-center gap-3 pl-5 pr-4 py-2.5 text-[13px] font-medium transition-all ${
           isActive
-            ? 'bg-blue-50 text-blue-700'
-            : 'text-gray-600 hover:bg-gray-50 hover:text-gray-900'
-        } ${isCollapsed ? 'justify-center px-2' : ''}`}
+            ? 'text-cardinal-700 bg-cardinal-50'
+            : 'text-gray-600 hover:text-cardinal-700 hover:bg-cardinal-50/40'
+        }`}
       >
-        <Icon className="w-5 h-5 flex-shrink-0" />
-        {!isCollapsed && <span>{item.label}</span>}
+        {/* Gold active indicator bar */}
+        <span
+          aria-hidden
+          className={`absolute left-0 top-0 bottom-0 w-[3px] transition-all ${
+            isActive ? 'bg-gradient-to-b from-gold-400 to-gold-600' : 'bg-transparent group-hover:bg-gold-300/50'
+          }`}
+        />
+        <Icon className={`w-[18px] h-[18px] flex-shrink-0 ${isActive ? 'text-cardinal-600' : 'text-gray-400 group-hover:text-cardinal-500'}`} />
+        <span className="truncate">{item.label}</span>
+        {isNotif && unread > 0 && (
+          <span className="ml-auto bg-cardinal-600 text-white text-[10px] font-bold rounded-full min-w-[18px] h-[18px] px-1.5 flex items-center justify-center">
+            {unread > 9 ? '9+' : unread}
+          </span>
+        )}
       </Link>
     );
   };
 
-  const sidebarContent = (isCollapsed = false) => (
+  const content = (
     <div className="flex flex-col h-full">
-      {/* Logo */}
-      <div className={`border-b ${isCollapsed ? 'p-4 flex justify-center' : 'p-6'}`}>
-        {isCollapsed ? (
-          <h1 className="text-xl font-bold text-blue-600">C</h1>
-        ) : (
-          <>
-            <h1 className="text-xl font-bold text-gray-800">CMS Dashboard</h1>
-            <p className="text-xs text-gray-500 mt-1 capitalize">{user?.role} Panel</p>
-          </>
-        )}
+      {/* Role label */}
+      <div className="px-5 pt-5 pb-3 border-b border-gray-200">
+        <p className="label-inst">{user?.role} Portal</p>
+        <p className="font-serif text-lg text-gray-900 mt-0.5 truncate">{user?.name}</p>
       </div>
 
-      {/* Nav */}
-      <nav className={`flex-1 overflow-y-auto space-y-1 ${isCollapsed ? 'p-2' : 'p-4'}`}>
-        {navItems.map((item) => (
-          <NavLink key={item.path} item={item} isCollapsed={isCollapsed} />
-        ))}
+      <nav className="flex-1 overflow-y-auto py-3">
+        <div className="px-5 pb-2">
+          <p className="label-inst text-gray-400">Navigation</p>
+        </div>
+        <div className="space-y-0.5">
+          {navItems.map(item => <NavLink key={item.path} item={item} />)}
+        </div>
       </nav>
 
-      {/* Bottom section */}
-      <div className={`border-t space-y-2 ${isCollapsed ? 'p-2' : 'p-4'}`}>
-        <Link
-          to="/notifications"
-          onClick={() => setMobileOpen(false)}
-          title={isCollapsed ? 'Notifications' : ''}
-          className={`flex items-center gap-3 px-4 py-2.5 rounded-lg text-sm font-medium text-gray-600 hover:bg-gray-50 hover:text-gray-900 transition-colors ${isCollapsed ? 'justify-center px-2' : ''}`}
-        >
-          <div className="relative">
-            <HiOutlineBell className="w-5 h-5" />
-            {unreadCount > 0 && (
-              <span className="absolute -top-1 -right-1 bg-red-500 text-white text-xs rounded-full w-4 h-4 flex items-center justify-center">
-                {unreadCount > 9 ? '9+' : unreadCount}
-              </span>
-            )}
-          </div>
-          {!isCollapsed && <span>Notifications</span>}
-        </Link>
-
-        <button
-          onClick={handleLogout}
-          title={isCollapsed ? 'Logout' : ''}
-          className={`flex items-center gap-3 px-4 py-2.5 rounded-lg text-sm font-medium text-red-600 hover:bg-red-50 transition-colors w-full ${isCollapsed ? 'justify-center px-2' : ''}`}
-        >
-          <HiOutlineLogout className="w-5 h-5" />
-          {!isCollapsed && <span>Logout</span>}
-        </button>
+      {/* Footer */}
+      <div className="border-t border-gray-200 px-5 py-4">
+        <div className="divider-gold mb-3" />
+        <p className="text-[10px] text-gray-500 leading-relaxed">
+          <span className="font-serif font-semibold text-gray-700">SRI RAMACHANDRA</span><br />
+          Engineering and Technology<br />
+          Campus Management System
+        </p>
       </div>
     </div>
   );
 
   return (
     <>
-      {/* Mobile toggle */}
-      <button
-        onClick={() => setMobileOpen(!mobileOpen)}
-        className="lg:hidden fixed top-4 left-4 z-50 p-2 bg-white rounded-lg shadow-md"
-      >
-        {mobileOpen ? <HiOutlineX className="w-6 h-6" /> : <HiOutlineMenu className="w-6 h-6" />}
-      </button>
+      {/* Desktop sidebar */}
+      <aside className="hidden lg:block w-60 flex-shrink-0 bg-white border-r border-gray-200 sticky top-16 self-start h-[calc(100vh-4rem)]">
+        {content}
+      </aside>
 
       {/* Mobile overlay */}
       {mobileOpen && (
-        <div
-          className="lg:hidden fixed inset-0 bg-black/30 z-40"
-          onClick={() => setMobileOpen(false)}
-        />
+        <div className="lg:hidden fixed inset-0 bg-black/40 z-40" onClick={() => setMobileOpen(false)} />
       )}
 
-      {/* Desktop sidebar */}
-      <aside className={`hidden lg:flex lg:flex-col lg:fixed lg:inset-y-0 bg-white border-r border-gray-200 z-30 transition-all duration-300 ${collapsed ? 'lg:w-20' : 'lg:w-64'}`}>
-        {/* Collapse toggle */}
-        <button
-          onClick={() => setCollapsed(!collapsed)}
-          className="absolute -right-3 top-8 w-6 h-6 bg-white border border-gray-200 rounded-full shadow-sm flex items-center justify-center hover:bg-gray-50 transition-colors z-40"
-          title={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
-        >
-          <svg className={`w-3 h-3 text-gray-500 transition-transform duration-300 ${collapsed ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
-          </svg>
-        </button>
-        {sidebarContent(collapsed)}
-      </aside>
-
-      {/* Mobile sidebar */}
+      {/* Mobile drawer */}
       <aside
-        className={`lg:hidden fixed inset-y-0 left-0 w-64 bg-white border-r border-gray-200 z-50 transform transition-transform ${
+        className={`lg:hidden fixed top-0 left-0 h-full w-64 bg-white border-r border-gray-200 z-50 shadow-xl transform transition-transform ${
           mobileOpen ? 'translate-x-0' : '-translate-x-full'
         }`}
       >
-        {sidebarContent(false)}
+        <div className="flex items-center justify-between px-5 h-16 border-b border-gray-200 bg-gradient-to-r from-cardinal-700 to-cardinal-800 text-white">
+          <span className="font-serif font-semibold tracking-wide">Menu</span>
+          <button onClick={() => setMobileOpen(false)} className="p-1 rounded hover:bg-white/10">
+            <HiOutlineX className="w-5 h-5" />
+          </button>
+        </div>
+        {content}
       </aside>
     </>
   );

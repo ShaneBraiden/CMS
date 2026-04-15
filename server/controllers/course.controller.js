@@ -1,36 +1,63 @@
-const Course = require('../models/Course');
-const Assignment = require('../models/Assignment');
-const Submission = require('../models/Submission');
-const Marks = require('../models/Marks');
-const Attendance = require('../models/Attendance');
-const Exam = require('../models/Exam');
+const { Course, CourseBatchTeacher, Assignment, Submission, Marks, Attendance, Exam, Batch, User } = require('../models');
+const { Op } = require('sequelize');
+
+// Helper: format a course with nested batches array for API compatibility
+const formatCourseResponse = (course) => {
+  const data = course.toJSON();
+  data._id = data.id;
+  if (data.courseBatches) {
+    data.batches = data.courseBatches.map(cb => ({
+      _id: cb.id,
+      batch_id: cb.batch ? { _id: cb.batch_id, name: cb.batch.name, year: cb.batch.year, department: cb.batch.department } : cb.batch_id,
+      teacher_id: cb.teacher ? { _id: cb.teacher_id, name: cb.teacher.name, email: cb.teacher.email } : cb.teacher_id
+    }));
+    delete data.courseBatches;
+  }
+  return data;
+};
 
 // @desc    Get courses (role-filtered)
 // @route   GET /api/courses
 exports.getCourses = async (req, res) => {
   try {
-    let query = {};
-    const { role, _id, batch_id } = req.user;
+    const { role, batch_id } = req.user;
+    const userId = req.user.id;
 
-    if (role === 'teacher') {
-      query = { 'batches.teacher_id': _id };
-    } else if (role === 'student') {
-      query = { 'batches.batch_id': batch_id };
-    }
-    // admin sees all
+    let whereClause = {};
+    let includeOpts = [{
+      model: CourseBatchTeacher,
+      as: 'courseBatches',
+      include: [
+        { model: User, as: 'teacher', attributes: ['name', 'email'] },
+        { model: Batch, as: 'batch', attributes: ['name', 'year', 'department'] }
+      ]
+    }];
 
     // Optional filters via query params
     const { semester, year, department } = req.query;
-    if (semester) query.semester = Number(semester);
-    if (year) query.year = Number(year);
-    if (department) query.department = department;
+    if (semester) whereClause.semester = Number(semester);
+    if (year) whereClause.year = Number(year);
+    if (department) whereClause.department = department;
 
-    const courses = await Course.find(query)
-      .populate('batches.teacher_id', 'name email')
-      .populate('batches.batch_id', 'name year department')
-      .sort({ semester: 1, name: 1, created_at: -1 });
+    let courses;
+    if (role === 'teacher') {
+      // Find courses where this teacher is assigned via junction table
+      const cbtRecords = await CourseBatchTeacher.findAll({ where: { teacher_id: userId }, attributes: ['course_id'] });
+      const courseIds = [...new Set(cbtRecords.map(r => r.course_id))];
+      whereClause.id = { [Op.in]: courseIds };
+      courses = await Course.findAll({ where: whereClause, include: includeOpts, order: [['semester', 'ASC'], ['name', 'ASC'], ['created_at', 'DESC']] });
+    } else if (role === 'student') {
+      // Find courses that include student's batch
+      const cbtRecords = await CourseBatchTeacher.findAll({ where: { batch_id: batch_id }, attributes: ['course_id'] });
+      const courseIds = [...new Set(cbtRecords.map(r => r.course_id))];
+      whereClause.id = { [Op.in]: courseIds };
+      courses = await Course.findAll({ where: whereClause, include: includeOpts, order: [['semester', 'ASC'], ['name', 'ASC'], ['created_at', 'DESC']] });
+    } else {
+      // admin sees all
+      courses = await Course.findAll({ where: whereClause, include: includeOpts, order: [['semester', 'ASC'], ['name', 'ASC'], ['created_at', 'DESC']] });
+    }
 
-    res.json({ success: true, data: courses });
+    res.json({ success: true, data: courses.map(formatCourseResponse) });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }
@@ -46,24 +73,39 @@ exports.createCourse = async (req, res) => {
       return res.status(400).json({ success: false, error: 'Course name is required' });
     }
 
-    // batches should be an array of { batch_id, teacher_id }
     const course = await Course.create({
       name,
-      code,
+      code: code || null,
       description,
       credits,
       department,
       semester: semester || null,
       year: year || null,
-      regulation: regulation || '',
-      batches: batches || []
+      regulation: regulation || ''
     });
 
-    const populated = await Course.findById(course._id)
-      .populate('batches.teacher_id', 'name email')
-      .populate('batches.batch_id', 'name year department');
+    // Create junction table entries for batches
+    if (batches && batches.length > 0) {
+      const cbtEntries = batches.map(b => ({
+        course_id: course.id,
+        batch_id: b.batch_id,
+        teacher_id: b.teacher_id
+      }));
+      await CourseBatchTeacher.bulkCreate(cbtEntries);
+    }
 
-    res.status(201).json({ success: true, data: populated, message: 'Course created successfully' });
+    // Fetch populated
+    const populated = await Course.findByPk(course.id, {
+      include: [{
+        model: CourseBatchTeacher, as: 'courseBatches',
+        include: [
+          { model: User, as: 'teacher', attributes: ['name', 'email'] },
+          { model: Batch, as: 'batch', attributes: ['name', 'year', 'department'] }
+        ]
+      }]
+    });
+
+    res.status(201).json({ success: true, data: formatCourseResponse(populated), message: 'Course created successfully' });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }
@@ -73,30 +115,49 @@ exports.createCourse = async (req, res) => {
 // @route   PUT /api/courses/:id
 exports.updateCourse = async (req, res) => {
   try {
-    const course = await Course.findById(req.params.id);
+    const course = await Course.findByPk(req.params.id);
     if (!course) {
       return res.status(404).json({ success: false, error: 'Course not found' });
     }
 
     const { name, code, description, credits, department, semester, year, regulation, batches } = req.body;
 
-    if (name) course.name = name;
-    if (code) course.code = code;
-    if (description !== undefined) course.description = description;
-    if (credits !== undefined) course.credits = credits;
-    if (department !== undefined) course.department = department;
-    if (semester !== undefined) course.semester = semester;
-    if (year !== undefined) course.year = year;
-    if (regulation !== undefined) course.regulation = regulation;
-    if (batches !== undefined) course.batches = batches;
+    const updateData = {};
+    if (name) updateData.name = name;
+    if (code) updateData.code = code;
+    if (description !== undefined) updateData.description = description;
+    if (credits !== undefined) updateData.credits = credits;
+    if (department !== undefined) updateData.department = department;
+    if (semester !== undefined) updateData.semester = semester;
+    if (year !== undefined) updateData.year = year;
+    if (regulation !== undefined) updateData.regulation = regulation;
 
-    await course.save();
+    await course.update(updateData);
 
-    const populated = await Course.findById(course._id)
-      .populate('batches.teacher_id', 'name email')
-      .populate('batches.batch_id', 'name year department');
+    // Update junction table if batches provided
+    if (batches !== undefined) {
+      await CourseBatchTeacher.destroy({ where: { course_id: course.id } });
+      if (batches.length > 0) {
+        const cbtEntries = batches.map(b => ({
+          course_id: course.id,
+          batch_id: b.batch_id,
+          teacher_id: b.teacher_id
+        }));
+        await CourseBatchTeacher.bulkCreate(cbtEntries);
+      }
+    }
 
-    res.json({ success: true, data: populated, message: 'Course updated successfully' });
+    const populated = await Course.findByPk(course.id, {
+      include: [{
+        model: CourseBatchTeacher, as: 'courseBatches',
+        include: [
+          { model: User, as: 'teacher', attributes: ['name', 'email'] },
+          { model: Batch, as: 'batch', attributes: ['name', 'year', 'department'] }
+        ]
+      }]
+    });
+
+    res.json({ success: true, data: formatCourseResponse(populated), message: 'Course updated successfully' });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }
@@ -106,22 +167,13 @@ exports.updateCourse = async (req, res) => {
 // @route   DELETE /api/courses/:id
 exports.deleteCourse = async (req, res) => {
   try {
-    const course = await Course.findById(req.params.id);
+    const course = await Course.findByPk(req.params.id);
     if (!course) {
       return res.status(404).json({ success: false, error: 'Course not found' });
     }
 
-    // Remove related data
-    const courseId = course._id;
-    await Promise.all([
-      Assignment.deleteMany({ course_id: courseId }),
-      Submission.deleteMany({ assignment_id: { $in: (await Assignment.find({ course_id: courseId })).map(a => a._id) } }),
-      Marks.deleteMany({ course_id: courseId }),
-      Attendance.deleteMany({ course_id: courseId }),
-      Exam.deleteMany({ course_id: courseId })
-    ]);
-
-    await Course.findByIdAndDelete(courseId);
+    // CASCADE will handle CourseBatchTeacher, Assignment, Attendance, Marks, Exam
+    await course.destroy();
 
     res.json({ success: true, message: 'Course deleted successfully' });
   } catch (error) {

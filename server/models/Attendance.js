@@ -1,16 +1,61 @@
-const mongoose = require('mongoose');
+module.exports = (sequelize, DataTypes) => {
+  const Attendance = sequelize.define('Attendance', {
+    id: {
+      type: DataTypes.INTEGER,
+      primaryKey: true,
+      autoIncrement: true
+    },
+    student_id: {
+      type: DataTypes.INTEGER,
+      allowNull: false,
+      references: { model: 'Users', key: 'id' },
+      onDelete: 'CASCADE'
+    },
+    course_id: {
+      type: DataTypes.INTEGER,
+      allowNull: false,
+      references: { model: 'Courses', key: 'id' },
+      onDelete: 'CASCADE'
+    },
+    date: {
+      type: DataTypes.DATEONLY,
+      allowNull: false
+    },
+    status: {
+      type: DataTypes.ENUM('present', 'absent'),
+      defaultValue: 'absent'
+    },
+    hourly_status: {
+      type: DataTypes.JSON,
+      defaultValue: ['N', 'N', 'N', 'N', 'N', 'N', 'N']
+    },
+    marked_by: {
+      type: DataTypes.INTEGER,
+      allowNull: true,
+      references: { model: 'Users', key: 'id' },
+      onDelete: 'SET NULL'
+    },
+    marked_at: {
+      type: DataTypes.DATE,
+      defaultValue: DataTypes.NOW
+    }
+  }, {
+    timestamps: true,
+    createdAt: 'created_at',
+    updatedAt: 'updated_at',
+    indexes: [
+      { fields: ['student_id', 'course_id', 'date'], unique: true },
+      { fields: ['student_id'] },
+      { fields: ['course_id'] },
+      { fields: ['date'] }
+    ]
+  });
 
-const attendanceSchema = new mongoose.Schema({
-  student_id:    { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
-  course_id:     { type: mongoose.Schema.Types.ObjectId, ref: 'Course', required: true },
-  date:          { type: Date, required: true },
-  status:        { type: String, enum: ['present', 'absent'], default: 'absent' },
-  hourly_status: { type: [String], default: ['N', 'N', 'N', 'N', 'N', 'N', 'N'] },
-  marked_by:     { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
-  marked_at:     { type: Date, default: Date.now },
-  updated_at:    { type: Date, default: Date.now }
-});
+  Attendance.associate = (models) => {
+    Attendance.belongsTo(models.User, { foreignKey: 'student_id', as: 'student' });
+    Attendance.belongsTo(models.Course, { foreignKey: 'course_id', as: 'course' });
+    Attendance.belongsTo(models.User, { foreignKey: 'marked_by', as: 'marker' });
+  };
 
-attendanceSchema.index({ student_id: 1, course_id: 1, date: 1 }, { unique: true });
-
-module.exports = mongoose.model('Attendance', attendanceSchema);
+  return Attendance;
+};

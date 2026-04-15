@@ -3,7 +3,14 @@ require('dotenv').config({ path: path.join(__dirname, '..', '.env') });
 
 module.exports = {
   port: process.env.PORT || 5000,
-  mongoUri: process.env.MONGO_URI || 'mongodb://localhost:27017/student_dashboard',
+  database: {
+    host: process.env.DB_HOST || 'localhost',
+    port: parseInt(process.env.DB_PORT) || 5432,
+    name: process.env.DB_NAME || 'student_dashboard',
+    user: process.env.DB_USER || 'postgres',
+    password: process.env.DB_PASSWORD || 'password'
+  },
+  poolSize: parseInt(process.env.DB_POOL_SIZE) || 10,
   jwtSecret: process.env.JWT_SECRET || 'default_jwt_secret',
   jwtExpire: process.env.JWT_EXPIRE || '7d',
   uploadFolder: process.env.UPLOAD_FOLDER || 'uploads',

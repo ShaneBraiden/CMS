@@ -7,6 +7,15 @@ const API = axios.create({
   timeout: 30000,
 });
 
+// Attach Bearer token from localStorage on every request
+API.interceptors.request.use((config) => {
+  const token = localStorage.getItem('token');
+  if (token) {
+    config.headers.Authorization = `Bearer ${token}`;
+  }
+  return config;
+});
+
 // ── Request deduplication for GET requests ──
 // Instead of aborting, share the same in-flight promise
 const inflightRequests = new Map();

@@ -1,20 +1,23 @@
-const Notification = require('../models/Notification');
+const { Notification } = require('../models');
 
 // @desc    Get user's notifications (marks all as read)
 // @route   GET /api/notifications
 exports.getNotifications = async (req, res) => {
   try {
-    const notifications = await Notification.find({ user_id: req.user._id })
-      .sort({ created_at: -1 })
-      .limit(50);
+    const notifications = await Notification.findAll({
+      where: { user_id: req.user.id },
+      order: [['created_at', 'DESC']],
+      limit: 50
+    });
 
     // Mark all as read
-    await Notification.updateMany(
-      { user_id: req.user._id, read: false },
-      { $set: { read: true } }
+    await Notification.update(
+      { read: true },
+      { where: { user_id: req.user.id, read: false } }
     );
 
-    res.json({ success: true, data: notifications });
+    const formatted = notifications.map(n => { const d = n.toJSON(); d._id = d.id; return d; });
+    res.json({ success: true, data: formatted });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }
@@ -24,7 +27,7 @@ exports.getNotifications = async (req, res) => {
 // @route   GET /api/notifications/count
 exports.getUnreadCount = async (req, res) => {
   try {
-    const count = await Notification.countDocuments({ user_id: req.user._id, read: false });
+    const count = await Notification.count({ where: { user_id: req.user.id, read: false } });
     res.json({ success: true, data: { count } });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
@@ -35,17 +38,17 @@ exports.getUnreadCount = async (req, res) => {
 // @route   PUT /api/notifications/:id/read
 exports.markAsRead = async (req, res) => {
   try {
-    const notification = await Notification.findOneAndUpdate(
-      { _id: req.params.id, user_id: req.user._id },
-      { $set: { read: true } },
-      { new: true }
-    );
+    const notification = await Notification.findOne({
+      where: { id: req.params.id, user_id: req.user.id }
+    });
 
     if (!notification) {
       return res.status(404).json({ success: false, error: 'Notification not found' });
     }
 
-    res.json({ success: true, data: notification });
+    await notification.update({ read: true });
+    const data = notification.toJSON(); data._id = data.id;
+    res.json({ success: true, data });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }

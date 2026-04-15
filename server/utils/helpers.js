@@ -1,4 +1,4 @@
-const Notification = require('../models/Notification');
+const { Notification } = require('../models');
 
 /**
  * Create a single notification
@@ -28,7 +28,7 @@ const createBulkNotifications = async (userIds, message, type = 'general', refer
       reference_id: referenceId
     }));
     if (notifications.length > 0) {
-      await Notification.insertMany(notifications);
+      await Notification.bulkCreate(notifications);
     }
   } catch (error) {
     console.error('Error creating bulk notifications:', error.message);

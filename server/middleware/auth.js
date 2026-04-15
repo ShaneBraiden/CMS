@@ -1,9 +1,9 @@
 const jwt = require('jsonwebtoken');
-const User = require('../models/User');
 const config = require('../config/config');
 
 const protect = async (req, res, next) => {
   try {
+    const { User } = require('../models');
     let token;
 
     // Check cookie first, then Authorization header
@@ -18,7 +18,9 @@ const protect = async (req, res, next) => {
     }
 
     const decoded = jwt.verify(token, config.jwtSecret);
-    req.user = await User.findById(decoded.id).select('-password_hash');
+    req.user = await User.findByPk(decoded.id, {
+      attributes: { exclude: ['password_hash'] }
+    });
 
     if (!req.user) {
       return res.status(401).json({ success: false, error: 'User not found' });

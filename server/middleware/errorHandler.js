@@ -4,23 +4,29 @@ const errorHandler = (err, req, res, next) => {
   let statusCode = err.statusCode || 500;
   let message = err.message || 'Server Error';
 
-  // Mongoose validation error
-  if (err.name === 'ValidationError') {
+  // Sequelize validation error
+  if (err.name === 'SequelizeValidationError') {
     statusCode = 400;
-    message = Object.values(err.errors).map(e => e.message).join(', ');
+    message = err.errors.map(e => e.message).join(', ');
   }
 
-  // Mongoose duplicate key
-  if (err.code === 11000) {
+  // Sequelize unique constraint error
+  if (err.name === 'SequelizeUniqueConstraintError') {
     statusCode = 400;
-    const field = Object.keys(err.keyValue)[0];
-    message = `Duplicate value for ${field}`;
+    const fields = err.errors ? err.errors.map(e => e.path).join(', ') : 'field';
+    message = `Duplicate value for ${fields}`;
   }
 
-  // Mongoose bad ObjectId
-  if (err.name === 'CastError') {
+  // Sequelize database error (bad query, etc.)
+  if (err.name === 'SequelizeDatabaseError') {
     statusCode = 400;
-    message = 'Resource not found';
+    message = 'Database error';
+  }
+
+  // Sequelize foreign key constraint error
+  if (err.name === 'SequelizeForeignKeyConstraintError') {
+    statusCode = 400;
+    message = 'Referenced record not found or cannot be deleted';
   }
 
   // Multer file size error

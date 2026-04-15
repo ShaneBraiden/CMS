@@ -1,15 +1,56 @@
-const mongoose = require('mongoose');
+module.exports = (sequelize, DataTypes) => {
+  const ODApplication = sequelize.define('ODApplication', {
+    id: {
+      type: DataTypes.INTEGER,
+      primaryKey: true,
+      autoIncrement: true
+    },
+    student_id: {
+      type: DataTypes.INTEGER,
+      allowNull: false,
+      references: { model: 'Users', key: 'id' },
+      onDelete: 'CASCADE'
+    },
+    start_date: {
+      type: DataTypes.DATEONLY,
+      allowNull: false
+    },
+    end_date: {
+      type: DataTypes.DATEONLY,
+      allowNull: false
+    },
+    reason: {
+      type: DataTypes.TEXT,
+      allowNull: false
+    },
+    status: {
+      type: DataTypes.ENUM('pending', 'approved', 'rejected'),
+      defaultValue: 'pending'
+    },
+    approved_by: {
+      type: DataTypes.INTEGER,
+      allowNull: true,
+      references: { model: 'Users', key: 'id' },
+      onDelete: 'SET NULL'
+    },
+    remarks: {
+      type: DataTypes.TEXT,
+      defaultValue: ''
+    }
+  }, {
+    timestamps: true,
+    createdAt: 'created_at',
+    updatedAt: 'updated_at',
+    indexes: [
+      { fields: ['student_id'] },
+      { fields: ['status'] }
+    ]
+  });
 
-const odApplicationSchema = new mongoose.Schema({
-  student_id:  { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
-  start_date:  { type: Date, required: true },
-  end_date:    { type: Date, required: true },
-  reason:      { type: String, required: true },
-  status:      { type: String, enum: ['pending', 'approved', 'rejected'], default: 'pending' },
-  approved_by: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
-  remarks:     { type: String, default: '' },
-  created_at:  { type: Date, default: Date.now },
-  updated_at:  { type: Date, default: Date.now }
-});
+  ODApplication.associate = (models) => {
+    ODApplication.belongsTo(models.User, { foreignKey: 'student_id', as: 'student' });
+    ODApplication.belongsTo(models.User, { foreignKey: 'approved_by', as: 'approver' });
+  };
 
-module.exports = mongoose.model('ODApplication', odApplicationSchema);
+  return ODApplication;
+};
